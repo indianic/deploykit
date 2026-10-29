@@ -1,0 +1,125 @@
+# profiles/lobehub.yml
+# Declarative profile for self-hosted LobeHub (Next.js, server-DB mode).
+# DATA ONLY — engine unchanged. Encodes what a self-hosted LobeHub deploy learned the
+# hard way (see docs/deploykit-improvements.md §F/§G).
+
+stack: lobehub
+match:
+  # Detected in code BEFORE the generic nextjs profile (analysis.ts detectStack):
+  package_name: ['@lobehub/chat', 'lobehub', 'lobe-chat']
+  package_dep: ['@lobehub/*']   # any @lobehub/* dependency
+  files: [package.json]
+
+# --- container facts -------------------------------------------------
+internal_port: 3210           # LobeHub's default server port
+healthcheck_path: /           # server-DB mode: `/` 302 -> /signin is HEALTHY
+healthcheck_fallback: /
+healthcheck_grace: 40         # server-DB boot (migrations + DB connect) is slower
+compose_service: lobe
+
+# --- how we build ----------------------------------------------------
+# LobeHub's `sharp` requires an x86-64-v2 CPU at BUILD AND RUN time. host_preflight
+# reports cpu_x86_64_v2 per host; pick a build host accordingly (see §E / build_host).
+build_strategy: registry-image   # prefer prebuilt image; server `docker compose pull`
+build_host:
+  # Capability-driven selection with fallbacks (finding #5):
+  order:
+    - runner_v2      # x86-64-v2 + Docker + RAM runner -> build + push to $CI_REGISTRY_IMAGE
+    - server_build   # else build on the server IF v2 and RAM/swap ok (add swap first)
+    - local_build    # else build locally + push
+  notes:
+    - 'The GitLab "docker-exec" runner is often a SHELL executor with host Docker —
+       `image:`/`services: dind` are silently IGNORED. Use host `docker` directly.'
+    - 'Apple Silicon local builds MUST use `colima start --vz-rosetta`; plain QEMU
+       crashes Node/pnpm with SIGABRT (134).'
+    - 'The RUN host must ALSO be x86-64-v2 for sharp at runtime, not just the builder.'
+
+# --- datastore: Postgres + pgvector (NOT MySQL, NOT stock PG) ---------
+datastore:
+  engine: postgres
+  image: paradedb/paradedb:latest   # ships pgvector; stock ISPConfig PG lacks it
+  requires_extension: vector
+  note: 'server-DB mode is chosen at RUNTIME by DATABASE_URL — there is no
+         NEXT_PUBLIC_SERVICE_MODE build trap in current LobeHub versions.'
+
+# --- secrets we generate (AUTO) --------------------------------------
+# Upstream ships a PUBLIC example JWKS_KEY — reusing it is insecure. Always mint
+# a fresh one. KEY_VAULTS_SECRET / NEXT_AUTH_SECRET are standard 32-byte secrets.
+secret_gen:
+  - key: KEY_VAULTS_SECRET
+    cmd: 'openssl rand -base64 32'
+    only_if_absent: true
+  - key: NEXT_AUTH_SECRET
+    cmd: 'openssl rand -base64 32'
+    only_if_absent: true
+  - key: JWKS_KEY
+    # A fresh RSA JWKS (never the shipped public example). Node one-liner:
+    cmd: >-
+      node -e "const {generateKeyPairSync,createPublicKey}=require('crypto');
+      const {privateKey}=generateKeyPairSync('rsa',{modulusLength:2048});
+      const jwk=privateKey.export({format:'jwk'});jwk.use='sig';jwk.alg='RS256';
+      process.stdout.write(JSON.stringify({keys:[jwk]}))"
+    only_if_absent: true
+    note: 'DO NOT reuse upstream .env.example JWKS_KEY — it is a published key.'
+
+# --- env classification ----------------------------------------------
+env_classify:
+  - { match: '^NODE_ENV$',            class: DERIVED, value: 'production' }
+  - { match: '^(PORT|APP_PORT)$',     class: DERIVED, value: '3210' }
+  - { match: '^(PUID|PGID)$',         class: DERIVED }
+  - { match: '^APP_URL$',             class: DERIVED, value: 'https://<domain>' }
+  - { match: '^NEXT_AUTH_SSO_PROVIDERS$', class: DERIVED }
+
+  # secrets we mint
+  - { match: '^JWKS_KEY$',            class: AUTO }
+  - { match: '^KEY_VAULTS_SECRET$',   class: AUTO }
+  - { match: '^NEXT_AUTH_SECRET$',    class: AUTO }
+
+  # datastore (server-DB mode) — always required in server mode
+  - { match: '^DATABASE_URL$',        class: SECRET, group: postgres }
+  - { match: '^DATABASE_DRIVER$',     class: DERIVED, value: 'node' }
+
+  # object storage (S3-compatible; LobeHub file uploads / RustFS)
+  - { match: '^S3_',                  class: SECRET, group: s3 }
+
+  # model provider keys — optional integrations, default SKIP
+  - { match: '^(OPENAI_|AZURE_|ANTHROPIC_|GOOGLE_|GROQ_|OLLAMA_|DEEPSEEK_|MISTRAL_)', class: INTEGRATION, group: providers }
+  - { match: '.*',                    class: SECRET, group: runtime_misc }
+
+integrations:
+  postgres:     { label: 'PostgreSQL + pgvector (paradedb)', keys: [DATABASE_URL] }
+  s3:           { label: 'S3-compatible object storage (RustFS/MinIO)', keys: [S3_ENDPOINT, S3_BUCKET, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY, S3_REGION, S3_PUBLIC_DOMAIN] }
+  providers:    { label: 'AI model provider keys', keys: [OPENAI_API_KEY, GOOGLE_API_KEY, ANTHROPIC_API_KEY] }
+  runtime_misc: { label: 'Other runtime vars', keys: [] }
+
+# --- RustFS bucket init (S3) -----------------------------------------
+# Upstream's bucket.config.json uses "ID", which newer minio/mc REJECTS
+# ("unknown field ID, expected Id"). Ship the corrected policy and make bucket
+# init NON-FATAL so a policy hiccup can't wedge the whole app.
+rustfs:
+  bucket_policy_fix: '"ID" -> "Id"'   # newer mc requires the capitalisation "Id"
+  bucket_init: non_fatal              # a failed bucket init must not block startup
+
+# --- compose defaults the engine enforces (finding #7) ---------------
+compose_defaults:
+  volumes: named          # NEVER bind-mount data under DEPLOY_PATH (the web docroot,
+                          # rsync --delete clobbers it + it is web-exposed). Named
+                          # volumes live in rootless Docker storage and survive deploys.
+  datastores: internal_only   # Postgres/RustFS: no host ports on a shared box
+  publish: '127.0.0.1:<proxy_port>:3210'
+  local_healthgate_ports: '!override'  # compose MERGES port lists otherwise -> double-bind
+  yaml_lint: true         # lint generated YAML for the plain-scalar ": " colon-trap
+
+# --- volumes ---------------------------------------------------------
+volumes:
+  - name: lobe-postgres-data   # named volume, NOT a bind mount under DEPLOY_PATH
+  - name: lobe-s3-data
+
+# --- notes surfaced in the Phase 2 questionnaire ---------------------
+notes:
+  - 'server-DB mode needs Postgres WITH pgvector — use paradedb/paradedb, not the
+     box MySQL or a stock ISPConfig Postgres (no pgvector).'
+  - 'Mint a FRESH JWKS_KEY — upstream ships a PUBLIC example key.'
+  - 'sharp needs x86-64-v2 at build AND run — check host_preflight.cpu_x86_64_v2.'
+  - 'Health: `/` answers 302 -> /signin and is HEALTHY (health gate accepts 3xx).'
+  - 'RustFS bucket.config.json: "ID" -> "Id" for newer mc; keep bucket init non-fatal.'

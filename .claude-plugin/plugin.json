@@ -1,0 +1,26 @@
+{
+  "name": "deploykit",
+  "version": "1.2.0",
+  "description": "One-shot, profile-driven pipeline that clones a GitHub project into a self-hosted GitLab + ISPConfig + rootless-Docker deployment, resolves env interactively, proves it locally, deploys, and returns the live URL. Stack-agnostic via profiles/.",
+  "author": {
+    "name": "IndiaNIC Infotech",
+    "url": "https://www.indianic.com"
+  },
+  "homepage": "https://github.com/indianic/deploykit",
+  "repository": "https://github.com/indianic/deploykit",
+  "license": "MIT",
+  "keywords": [
+    "deployment",
+    "docker",
+    "ispconfig",
+    "gitlab-ci",
+    "rootless-docker",
+    "laravel",
+    "nextjs",
+    "sshcon",
+    "self-hosted"
+  ],
+  "commands": "./commands",
+  "skills": "./skills",
+  "mcpServers": "./.mcp.json"
+}

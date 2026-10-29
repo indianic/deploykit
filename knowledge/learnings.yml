@@ -1,0 +1,185 @@
+# Append-only. /deploykit:retro adds entries; nothing here is rewritten/deleted.
+# deploy-engine loads this at the start of every deploy (SKILL.md §8) and runs
+# each entry's `detect` when `applies_when` matches the target.
+version: 1
+learnings:
+  - id: ispconfig-immutable-home
+    symptom: 'mkdir ~/.config fails "Operation not permitted" even as root;
+              rootless-setuptool dies "HOME needs to be writable"'
+    root_cause: 'ISPConfig sets chattr +i (immutable) on the web-root home dir'
+    detect: 'lsattr -d <home> shows the "i" flag'
+    fix: 'chattr -i, create needed subdirs owned by the domain user, chattr +i to restore'
+    applies_when: 'host is ISPConfig-provisioned'
+    source_session: ispconfig-pipeline-deploy
+    added: 2026-07-18
+  - id: uid-two-passwd-names
+    symptom: 'rootless docker.service written but systemctl --user cannot see it'
+    root_cause: 'one uid maps to two passwd entries; systemd resolves the FIRST
+                 name and searches ITS home, not the shell user home the unit was written to'
+    detect: 'id -un <uid> differs from the login username'
+    fix: 'write the unit into the systemd-resolved name home .config/systemd/user;
+          pin HOME/XDG_DATA_HOME/XDG_CONFIG_HOME in the unit to a writable home'
+    applies_when: 'host is ISPConfig-provisioned; shared uid/gid web users'
+    source_session: ispconfig-pipeline-deploy
+    added: 2026-07-18
+  - id: no-user-session-bus
+    symptom: 'systemctl --user fails: "Failed to connect to bus"'
+    root_cause: 'su -/sudo -iu give no user D-Bus session'
+    detect: 'test -S /run/user/<uid>/bus is false'
+    fix: 'enable-linger; drive systemctl with XDG_RUNTIME_DIR + DBUS_SESSION_BUS_ADDRESS,
+          or use a real login session'
+    applies_when: 'rootless docker setup as a domain user'
+    source_session: ispconfig-pipeline-deploy
+    added: 2026-07-18
+  - id: gitlab-shallow-push-reject
+    symptom: 'push rejected: "shallow update not allowed"'
+    root_cause: 'branch created from a --depth 1 fetch is shallow'
+    detect: 'git rev-parse --is-shallow-repository == true'
+    fix: 'git fetch --unshallow before pushing to origin'
+    applies_when: 'source cloned/fetched with --depth 1'
+    source_session: ispconfig-pipeline-deploy
+    added: 2026-07-18
+  - id: gitlab-vars-environment-scoped
+    symptom: 'CI job fails "Host key verification failed"; SERVER_* look unset'
+    root_cause: 'project CI variables are scoped to the production environment;
+                 a job without environment:name gets empty values'
+    detect: 'glab variable list shows a non-empty environment scope'
+    fix: 'declare environment: name: <scope> in the deploy job'
+    applies_when: 'GitLab project variables have an environment scope'
+    source_session: ispconfig-pipeline-deploy
+    added: 2026-07-18
+  - id: reuse-existing-ci-var-names
+    symptom: 'new DEPLOY_* variables duplicate existing working ones'
+    root_cause: 'org uses SERVER_ACCESS/SERVER_IP/SERVER_USER/DEPLOY_PATH already'
+    detect: 'existing .gitlab-ci.yml / glab variable list name the real vars'
+    fix: 'reuse the existing variable names; do not invent parallel ones'
+    applies_when: 'repo already has a .gitlab-ci.yml or CI variables'
+    source_session: ispconfig-pipeline-deploy
+    added: 2026-07-18
+  - id: podman-compose-precedence
+    symptom: 'docker compose picks compose.yaml and fails on userns_mode/:U'
+    root_cause: 'repo ships a podman-only compose.yaml that wins by filename precedence'
+    detect: 'compose.yaml contains userns_mode: keep-id or ":U" volume flags'
+    fix: 'select the compose file explicitly with -f; use an operator-owned override file'
+    applies_when: 'repo has multiple compose files or a podman-oriented one'
+    source_session: ispconfig-pipeline-deploy
+    added: 2026-07-18
+  - id: json-configured-app
+    symptom: 'detect_env finds almost no keys; setting env vars has no effect'
+    root_cause: 'app unsets env at container start and reads settings JSON files'
+    detect: 'entrypoint unsets vars / repo has a settings/*.json config dir and no .env'
+    fix: 'configure via the settings JSON on the server (gitignored, in the data volume);
+          do not rely on .env classification'
+    applies_when: 'config_model is non-env (json/settings dir)'
+    source_session: ispconfig-pipeline-deploy
+    added: 2026-07-18
+  - id: auth-gate-3xx-healthy
+    symptom: 'health check reports unhealthy though the app is fine'
+    root_cause: 'auth-gated app returns 307 -> /login; only 2xx was treated as healthy'
+    detect: 'curl / returns 30x with a Location to a login path'
+    fix: 'accept 3xx as healthy in the health gate'
+    applies_when: 'app has a login/auth gate'
+    source_session: ispconfig-pipeline-deploy
+    added: 2026-07-18
+  - id: preserve-existing-server-env
+    symptom: 'about to overwrite an existing APP_DIR/.env'
+    root_cause: 'a prior scaffold (pm2/Postgres) already wrote a .env'
+    detect: 'APP_DIR/.env exists before first deploy'
+    fix: 'back it up to .env.<prev>.bak; write the new one only after'
+    applies_when: 'APP_DIR pre-provisioned by another workflow'
+    source_session: ispconfig-pipeline-deploy
+    added: 2026-07-18
+  - id: ssl-not-provisioned
+    symptom: 'HTTPS health fails: cert name mismatch (serves another vhost cert)'
+    root_cause: 'no :443 vhost / no Let''s Encrypt cert for the domain yet'
+    detect: 'openssl s_client -servername <domain> shows a non-matching CN/SAN;
+             no :443 block in the vhost; no /etc/letsencrypt/live/<domain>'
+    fix: 'enable SSL + Let''s Encrypt in ISPConfig (DNS must resolve to the box);
+          until then health-check over HTTP-through-Apache and never claim HTTPS success'
+    applies_when: 'freshly provisioned ISPConfig domain'
+    source_session: ispconfig-pipeline-deploy
+    added: 2026-07-18
+  - id: auth-key-first
+    symptom: '"Permission denied (publickey,password)" for root/domain even with a correct password'
+    root_cause: 'server is key-only, or the password path was mis-run (BatchMode suppressed the
+                 prompt / a script was piped over bash -s stdin under sshpass)'
+    detect: 'ssh_auth_preflight reports key-only, or password auth fails where sshpass works in a shell'
+    fix: 'MCP is key-first-then-password; for a key-only host resolve with deploy_key_env
+          naming the base64 SERVER_ACCESS var; never pipe a script over bash -s under sshpass'
+    applies_when: 'any SSH target, especially key-only root'
+    source_session: lobehub-selfhost-deploy
+    added: 2026-08-06
+  - id: cpu-not-v2
+    symptom: 'next build fails deep in sharp / SIGILL on the CI runner'
+    root_cause: 'build host CPU is pre-x86-64-v2; sharp needs v2 at build AND run'
+    detect: 'host_preflight.cpu_x86_64_v2 == false'
+    fix: 'build on a v2 host and push a prebuilt image; Apple Silicon local build uses colima --vz-rosetta'
+    applies_when: 'stack needs sharp (lobehub/next image pipelines)'
+    source_session: lobehub-selfhost-deploy
+    added: 2026-08-06
+  - id: ispconfig-quota
+    symptom: '"disk quota exceeded" mid docker pull/build'
+    root_cause: 'ISPConfig defaults the domain user to a 2 GB quota; rootless images/volumes fill $HOME'
+    detect: 'host_preflight.disk_quota_hard_mb is small (~2048)'
+    fix: 'raise the quota in the ISPConfig panel; a raw setquota may be reverted by ISPConfig quota sync'
+    applies_when: 'host is ISPConfig-provisioned; rootless Docker under the domain user'
+    source_session: lobehub-selfhost-deploy
+    added: 2026-08-06
+  - id: build-ram-peak
+    symptom: 'build OOM-killed'
+    root_cause: 'LobeHub build peaks ~8 GB; box had ~4.7 GB free'
+    detect: 'host_preflight.usable_mem_mb (avail + swap) below ~8000'
+    fix: 'add a swapfile before building here, or route the build to a bigger host'
+    applies_when: 'memory-heavy Next.js build on a small box'
+    source_session: lobehub-selfhost-deploy
+    added: 2026-08-06
+  - id: docker-exec-shell-runner
+    symptom: 'CI image:/services: dind are silently ignored; build runs on the host'
+    root_cause: 'the "docker-exec" GitLab runner is a SHELL executor with host Docker'
+    detect: 'runner config shows executor = shell; docker is the host daemon'
+    fix: 'use host docker directly; do not rely on image:/dind'
+    applies_when: 'GitLab CI on a docker-exec/shell runner'
+    source_session: lobehub-selfhost-deploy
+    added: 2026-08-06
+  - id: no-docker-no-repo
+    symptom: 'apt-get install docker-ce-rootless-extras 404s'
+    root_cause: 'box has neither Docker nor the Docker apt repo'
+    detect: 'command -v docker fails; no docker.list apt source'
+    fix: 'grant_docker_access installs Docker CE via get.docker.com first, then rootless-extras'
+    applies_when: 'fresh box with no Docker'
+    source_session: lobehub-selfhost-deploy
+    added: 2026-08-06
+  - id: rustfs-id-case
+    symptom: 'RustFS/mc bucket policy load fails: "unknown field ID, expected Id"'
+    root_cause: 'upstream bucket.config.json uses "ID"; newer minio/mc wants "Id"'
+    detect: 'bucket.config.json contains a JSON key "ID"'
+    fix: 'rename "ID" -> "Id"; keep bucket init NON-FATAL so a policy hiccup does not wedge the app'
+    applies_when: 'lobehub with RustFS/MinIO object storage'
+    source_session: lobehub-selfhost-deploy
+    added: 2026-08-06
+  - id: lobehub-pgvector
+    symptom: 'server-DB mode fails: pgvector extension missing'
+    root_cause: 'used stock Postgres/MySQL; LobeHub server-DB needs pgvector'
+    detect: 'stack == lobehub and DATABASE_URL points at non-pgvector PG'
+    fix: 'use paradedb/paradedb (ships pgvector); mint a fresh JWKS_KEY (upstream ships a public example)'
+    applies_when: 'stack == lobehub'
+    source_session: lobehub-selfhost-deploy
+    added: 2026-08-06
+  - id: sshcon-managed-key-auth
+    symptom: 'sshcon_resolve says auth is missing for a key-auth server'
+    root_cause: "key lives in sshcon's key store, not on disk; deploykit assumed a local key path"
+    detect: 'sshcon list <name> shows "Auth Type: key" with no key-path field'
+    fix: 'treat it as sshcon-managed; export the key with `sshcon ssh-key <name> --write <tmp>`
+          (needs sshcon >= 2.13.0), use it for the session, delete on expiry; or resolve
+          without sshcon via ssh_resolve giving a key_path/password'
+    applies_when: 'sshcon target with Auth Type: key and no key path'
+    source_session: sshcon-managed-key-auth
+    added: 2026-08-06
+  - id: gitlab-selfhosted-ref
+    symptom: 'glab returns 404 for a self-hosted project'
+    root_cause: 'glab -R owner/repo defaults to gitlab.com; project can also move namespace'
+    detect: 'glab call 404s against a bare owner/repo'
+    fix: 'pass repo as a full URL / host/group/project to pipeline_* (-R); pin registry to $CI_REGISTRY_IMAGE'
+    applies_when: 'self-hosted GitLab'
+    source_session: lobehub-selfhost-deploy
+    added: 2026-08-06

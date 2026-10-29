@@ -1,0 +1,132 @@
+# profiles/nextjs.yml
+# Declarative stack profile consumed by bootstrap-deploy Phase 1b.
+# DATA ONLY — engine unchanged. Covers Next.js App/Pages router, standalone output.
+
+stack: nextjs
+match:
+  files: [package.json, next.config.js, next.config.mjs, next.config.ts]
+  package_dep: [next]        # any one present => this profile
+
+# --- container facts -------------------------------------------------
+internal_port: 3000          # `next start` / standalone server default
+healthcheck_path: /api/health   # convention; falls back below if 404
+healthcheck_fallback: /      # root page 200 is acceptable if no health route
+healthcheck_grace: 20        # standalone boot is fast; allow for cold start
+compose_service: web
+
+# --- how we build ----------------------------------------------------
+build_strategy: compose-build   # build from repo Dockerfile every deploy
+# If the repo has NO Dockerfile, engine wraps one (wrap-dockerfile) using this:
+dockerfile_template: |
+  # multi-stage; requires next.config output:'standalone'
+  FROM node:20-alpine AS deps
+  WORKDIR /app
+  COPY package.json package-lock.json* ./
+  RUN npm ci
+  FROM node:20-alpine AS build
+  WORKDIR /app
+  COPY --from=deps /app/node_modules ./node_modules
+  COPY . .
+  ARG NEXT_PUBLIC_BUILD_ONLY=1
+  RUN npm run build
+  FROM node:20-alpine AS run
+  WORKDIR /app
+  ENV NODE_ENV=production
+  ENV PORT=3000 HOSTNAME=0.0.0.0
+  RUN addgroup -g 1001 nodejs && adduser -u 1001 -G nodejs -S nextjs
+  COPY --from=build /app/public ./public
+  COPY --from=build --chown=nextjs:nodejs /app/.next/standalone ./
+  COPY --from=build --chown=nextjs:nodejs /app/.next/static ./.next/static
+  USER nextjs
+  EXPOSE 3000
+  CMD ["node", "server.js"]
+
+# --- pre-build guardrails (engine warns in Phase 1b) -----------------
+preflight:
+  - check: "next.config output === 'standalone'"
+    hint: "Add `output: 'standalone'` to next.config — required for the slim image."
+  - check: 'package.json has "build" and "start" scripts'
+  - check: 'lockfile present (package-lock.json / pnpm-lock.yaml / yarn.lock)'
+
+# --- secrets we generate ---------------------------------------------
+secret_gen:
+  - key: NEXTAUTH_SECRET
+    cmd: 'openssl rand -base64 32'
+    only_if_absent: true
+    only_if_key_referenced: true   # generate ONLY if the repo actually uses NextAuth
+
+# --- CRITICAL Next.js env split (build-time vs runtime) --------------
+# NEXT_PUBLIC_* is INLINED AT BUILD TIME. It must be present during
+# `npm run build`, not just at runtime. Engine passes these as compose
+# build `args` AND runtime env. Non-public vars are runtime-only.
+build_time_env_prefix: '^NEXT_PUBLIC_'
+
+# --- env classification ----------------------------------------------
+# Classes: AUTO | DERIVED | SECRET | INTEGRATION | IGNORE
+env_classify:
+  - { match: '^NODE_ENV$',            class: DERIVED, value: 'production' }
+  - { match: '^PORT$',                class: DERIVED, value: '3000' }
+  - { match: '^HOSTNAME$',            class: DERIVED, value: '0.0.0.0' }
+  - { match: '^(PUID|PGID)$',         class: DERIVED }   # engine fills from id -u/-g
+
+  # public site URL / API base — derived from the domain, needed at BUILD time
+  - { match: '^NEXT_PUBLIC_(SITE_URL|APP_URL|BASE_URL)$', class: DERIVED, value: 'https://<domain>' }
+  - { match: '^NEXTAUTH_URL$',        class: DERIVED, value: 'https://<domain>' }
+  - { match: '^NEXTAUTH_SECRET$',     class: AUTO }
+
+  # datastore (MERN/Next fullstack) — Phase 2 asks which, default = none
+  - { match: '^DATABASE_URL$',        class: SECRET, group: postgres }
+  - { match: '^MONGODB_URI$',         class: SECRET, group: mongo }
+  - { match: '^REDIS_URL$',           class: SECRET, group: redis }
+
+  # optional integrations — default SKIP
+  - { match: '^(STRIPE_|NEXT_PUBLIC_STRIPE_)', class: INTEGRATION, group: stripe }
+  - { match: '^(SMTP_|EMAIL_|RESEND_|SENDGRID_)', class: INTEGRATION, group: email }
+  - { match: '^(S3_|AWS_|R2_)',       class: INTEGRATION, group: s3 }
+  - { match: '^(GOOGLE_|GITHUB_|OAUTH_)', class: INTEGRATION, group: oauth }
+  - { match: '^(OPENAI_|ANTHROPIC_|GEMINI_)', class: INTEGRATION, group: ai }
+  - { match: '^NEXT_PUBLIC_',         class: INTEGRATION, group: public_misc } # any other public var
+  - { match: '.*',                    class: SECRET, group: runtime_misc }     # catch-all: treat unknown as runtime secret
+
+# --- integration groups ----------------------------------------------
+integrations:
+  postgres:     { label: 'PostgreSQL (self-hosted)',   keys: [DATABASE_URL] }
+  mongo:        { label: 'MongoDB (MERN)',             keys: [MONGODB_URI] }
+  redis:        { label: 'Redis cache/queue',          keys: [REDIS_URL] }
+  stripe:       { label: 'Stripe payments',            keys: [STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY] }
+  email:        { label: 'Transactional email',        keys: [SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, EMAIL_FROM] }
+  s3:           { label: 'S3 / R2 object storage',     keys: [S3_ENDPOINT, S3_REGION, S3_BUCKET, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY] }
+  oauth:        { label: 'OAuth providers',            keys: [GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GITHUB_ID, GITHUB_SECRET] }
+  ai:           { label: 'AI API keys',                keys: [OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY] }
+  public_misc:  { label: 'Other NEXT_PUBLIC_* (build-time inlined)', keys: [] } # engine lists what it found
+  runtime_misc: { label: 'Other runtime vars',         keys: [] }
+
+# --- volumes (usually none; Next is stateless) -----------------------
+volumes: []   # add e.g. uploads dir here if the app writes to disk
+
+# --- compose override hints ------------------------------------------
+override:
+  publish: '127.0.0.1:<proxy_port>:3000'
+  env_file: .env
+  restart: unless-stopped
+  # engine ALSO emits build.args for every NEXT_PUBLIC_* + NEXTAUTH_URL
+  # so build-time inlining works; see build_time_env_prefix above.
+
+# --- notes surfaced in Phase 2 questionnaire -------------------------
+notes:
+  - 'Next.js inlines NEXT_PUBLIC_* AT BUILD TIME — the engine passes them as
+     compose build args, not just runtime env. Change one => rebuild required.'
+  - 'Needs output:"standalone" in next.config for the slim runtime image.
+     If missing, engine flags it in Phase 1b before building.'
+  - 'Stateless by default: redeploys are safe, no volume to preserve unless the
+     app writes uploads to local disk.'
+
+# --- deploy-direct preflight requirements -----------------------------------
+requires:
+  - bin: node
+    min: "18"
+    install: "Install Node 18+ (nvm, or NodeSource) for the domain user"
+  - bin: npm
+    install: "Ships with Node"
+  - bin: pm2
+    install: "npm i -g pm2 (as the domain user, or global with a user-writable prefix)"

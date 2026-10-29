@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "indianic-deploy",
+  "owner": {
+    "name": "IndiaNIC Infotech",
+    "email": "devops@indianic.com"
+  },
+  "metadata": {
+    "description": "Claude Code plugins for self-hosted deployment (GitLab + ISPConfig + rootless Docker).",
+    "version": "1.2.0"
+  },
+  "plugins": [
+    {
+      "name": "deploykit",
+      "source": ".",
+      "description": "One-shot, profile-driven pipeline: clone a GitHub project into a self-hosted GitLab + ISPConfig + rootless-Docker deployment, resolve env interactively, prove it locally, deploy, and return the live URL. Stack-agnostic via profiles/.",
+      "version": "1.2.0",
+      "author": { "name": "IndiaNIC Infotech" },
+      "license": "MIT",
+      "category": "deployment",
+      "tags": ["docker", "ispconfig", "gitlab-ci", "rootless-docker", "sshcon"]
+    }
+  ]
+}

@@ -1,0 +1,35 @@
+# Secrets — NEVER commit (deploykit invariant #3)
+.env
+.env.*
+!.env.example
+
+# Deploy volume data (deploykit invariant #4)
+*-data/
+
+# MCP server build artifacts
+deploykit-mcp/node_modules/
+
+# dist/ is ignored EXCEPT the bundled server: it is the shipped artifact.
+# `npm run build` bundles the SDK + zod into this one self-contained file so a
+# teammate who installs the plugin needs no npm install and no build step.
+# Rebuild and commit it whenever src/ changes, or installs ship stale code.
+deploykit-mcp/dist/*
+!deploykit-mcp/dist/server.js
+
+# Node / tooling
+node_modules/
+npm-debug.log*
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
+
+# Local tooling
+.omc/
+
+# Audit log — operator-local, never committed
+audit.jsonl
+
+# SDD scratch (progress ledger)
+.superpowers/

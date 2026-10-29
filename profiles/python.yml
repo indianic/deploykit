@@ -1,0 +1,109 @@
+# profiles/python.yml
+# Declarative stack profile consumed by bootstrap-deploy Phase 1b.
+# DATA ONLY — the engine never changes; add stacks by adding files like this.
+#
+# Python apps are far less uniform than Laravel/Next: Django, Flask, FastAPI,
+# Streamlit, Gradio, plain worker scripts all show up as "requirements.txt or
+# pyproject.toml". This profile is deliberately conservative — most facts are
+# null/ask rather than assumed, per invariant #6.
+
+stack: python
+match:                        # any of these present => candidate profile
+  files: [requirements.txt, pyproject.toml]
+  exclude_package_dep: [next] # if package.json declares `next`, the nextjs profile wins instead
+
+# --- container facts -------------------------------------------------
+internal_port: null         # UNKNOWN — invariant #6: never assume. Ask; common
+                             # candidates: 8000 (Django/FastAPI+uvicorn), 5000
+                             # (Flask), 8501 (Streamlit), 7860 (Gradio).
+healthcheck_path: /          # generic root; many Python apps have no /health route
+healthcheck_fallback: null   # no universal fallback — ask if / 404s or isn't safe to probe
+healthcheck_grace: 30        # interpreter start + model/data loads can be slow (ML apps)
+compose_service: null        # unknown until repo inspected; ask
+
+# --- how we build ----------------------------------------------------
+build_strategy: compose-build   # build from repo Dockerfile; ask if one must be authored
+
+# --- secrets we generate ourselves (never asked, never committed) ----
+secret_gen:
+  - key: SECRET_KEY
+    cmd: 'python3 -c "import secrets; print(secrets.token_urlsafe(50))"'
+    only_if_absent: true
+    only_if_key_referenced: true   # Django/Flask SECRET_KEY; generate only if the repo uses it
+
+# --- env classification overrides (regex on KEY name) ----------------
+# Classes: AUTO | DERIVED | SECRET | INTEGRATION | IGNORE
+# Engine's generic pass runs first; these override it.
+# IMPORTANT: these only apply when config_model == "env" (see notes below).
+env_classify:
+  - { match: '^(DJANGO_SECRET_KEY|SECRET_KEY|FLASK_SECRET_KEY)$', class: AUTO }
+  - { match: '^(APP_ENV|ENV|ENVIRONMENT)$',                       class: DERIVED, value: 'production' }
+  - { match: '^(DEBUG|DJANGO_DEBUG)$',                             class: DERIVED, value: 'false' }
+  - { match: '^(PUID|PGID)$',                                      class: DERIVED } # engine fills from `id -u/-g`
+  - { match: '^(PORT|APP_PORT)$',                                  class: DERIVED }
+  - { match: '^LOG_(LEVEL|FORMAT)$',                               class: IGNORE }
+
+  # datastore — Phase 2 asks which, default = none
+  - { match: '^DATABASE_URL$',        class: SECRET, group: postgres }
+  - { match: '^(POSTGRES_|DB_)',      class: SECRET, group: postgres }
+  - { match: '^MONGODB_URI$',         class: SECRET, group: mongo }
+  - { match: '^REDIS_URL$',           class: SECRET, group: redis }
+
+  # optional integrations — all default SKIP; only prompted if enabled
+  - { match: '^(OPENAI_|ANTHROPIC_|GEMINI_)', class: INTEGRATION, group: ai }
+  - { match: '^(MAIL_|SMTP_)',        class: INTEGRATION, group: smtp }
+  - { match: '^(AWS_|S3_)',           class: INTEGRATION, group: s3 }
+  - { match: '^SENTRY_',              class: INTEGRATION, group: sentry }
+
+# --- integration groups: label + which keys to ask when enabled ------
+integrations:
+  postgres: { label: 'PostgreSQL (self-hosted)',    keys: [DATABASE_URL] }
+  mongo:    { label: 'MongoDB',                     keys: [MONGODB_URI] }
+  redis:    { label: 'Redis cache/queue',           keys: [REDIS_URL] }
+  ai:       { label: 'AI API keys',                 keys: [OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY] }
+  smtp:     { label: 'Email / SMTP',                keys: [MAIL_HOST, MAIL_PORT, MAIL_USERNAME, MAIL_PASSWORD, SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD] }
+  s3:       { label: 'S3 / MinIO object storage',   keys: [AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_DEFAULT_REGION, S3_BUCKET] }
+  sentry:   { label: 'Sentry error tracking',       keys: [SENTRY_DSN] }
+
+# --- volumes the engine must create on the server (Phase 6.3) ---------
+volumes: []   # ask; many Python apps write to a data/ or media/ dir on disk
+
+# --- compose override hints the engine writes (Phase 4.1) -------------
+override:
+  publish: '127.0.0.1:<proxy_port>:<internal_port>'   # internal_port unknown until confirmed
+  env_file: .env   # only correct when config_model == "env" — see notes
+  restart: unless-stopped
+  # PUID/PGID injected by engine from the domain user's real uid/gid
+
+# --- notes surfaced to me in the Phase 2 questionnaire ----------------
+notes:
+  - 'Python apps vary wildly (Django/Flask/FastAPI/Streamlit/Gradio/worker
+     scripts) — internal_port and compose_service are NOT assumed here; ask
+     (invariant #6).'
+  - 'MANY Python apps do NOT read config from .env at all — they load a
+     settings/*.json or config/*.json file at runtime instead (seen live on
+     HKUDS/DeepTutor). detect_env now reports config_model:
+     "non-env (json/settings dir) — classify from app docs" when it finds a
+     Dockerfile/compose file, no .env/.env.example/.env.sample/.env.dist, and
+     a settings-dir JSON layout. When that fires, do NOT wire an env_file —
+     read the repo docs / settings schema and classify each JSON key by hand
+     using the same AUTO/DERIVED/SECRET/INTEGRATION/IGNORE taxonomy.'
+  - 'Auth-gated apps commonly redirect / -> /login with a 307. health_check
+     now accepts 2xx OR 3xx by default so this is not misread as down; pass
+     expect:"2xx" if a specific app must never redirect on its health path.'
+  - 'requirements.txt/pyproject.toml alone does not imply a long-running web
+     server — confirm there is an actual server process (uvicorn, gunicorn,
+     manage.py runserver, flask run, streamlit run) before assuming a
+     compose_service and internal_port are needed at all.'
+
+# --- deploy-direct preflight requirements -----------------------------------
+requires:
+  - bin: python3
+    min: "3.10"
+    install: "Install Python 3.10+ for the domain user"
+  - bin: pip3
+    install: "python3 -m ensurepip / your OS python3-pip package"
+  - bin: pm2
+    install: "npm i -g pm2. gunicorn/uvicorn take flags and resolve from PATH, which
+      pm2.start.script cannot express — so native run needs a pm2 ecosystem.config.* that
+      declares the interpreter/script/args, started via pm2.start.ecosystem."

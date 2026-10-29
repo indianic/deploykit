@@ -1,0 +1,99 @@
+# profiles/laravel.yml
+# Declarative stack profile consumed by bootstrap-deploy Phase 1b.
+# DATA ONLY — the engine never changes; add stacks by adding files like this.
+
+stack: laravel
+match:                      # any of these present => this profile
+  files: [artisan, composer.json]
+  composer_require: [laravel/framework]
+
+# --- container facts -------------------------------------------------
+internal_port: 2226         # databasement listens here; generic Laravel often 8000/80
+healthcheck_path: /up       # Laravel 11+ built-in health route; falls back to / below
+healthcheck_fallback: /     # used if /up returns 404 on older Laravel
+healthcheck_grace: 25       # migrations + queue worker + scheduler need warm-up
+compose_service: databasement   # primary service; engine targets this for up/logs
+
+# --- how we build ----------------------------------------------------
+build_strategy: compose-build   # build from repo Dockerfile (supports future code edits)
+prebuilt_image: davidcrty/databasement:1   # used only if I switch strategy to prebuilt-image
+
+# --- secrets we generate ourselves (never asked, never committed) ----
+secret_gen:
+  - key: APP_KEY
+    cmd: 'echo "base64:$(openssl rand -base64 32)"'
+    only_if_absent: true    # never rotate an existing key on redeploy
+
+# --- env classification overrides (regex on KEY name) ----------------
+# Classes: AUTO | DERIVED | SECRET | INTEGRATION | IGNORE
+# Engine's generic pass runs first; these override it.
+env_classify:
+  - { match: '^APP_KEY$',                      class: AUTO }
+  - { match: '^APP_URL$',                      class: DERIVED, value: 'https://<domain>' }
+  - { match: '^APP_NAME$',                     class: DERIVED, value: 'Databasement' }
+  - { match: '^APP_ENV$',                      class: DERIVED, value: 'production' }
+  - { match: '^APP_DEBUG$',                    class: DERIVED, value: 'false' }
+  - { match: '^ENABLE_QUEUE_WORKER$',          class: DERIVED, value: 'true' }
+  - { match: '^(PUID|PGID)$',                  class: DERIVED } # engine fills from `id -u/-g`
+  - { match: '^LOG_(CHANNEL|LEVEL)$',          class: IGNORE }  # sane defaults, don't prompt
+
+  # datastore — Phase 2 asks sqlite (default) vs external Postgres (I self-host PG)
+  - { match: '^DB_CONNECTION$',                class: DERIVED, value: 'sqlite' }
+  - { match: '^DB_DATABASE$',                  class: DERIVED, value: '/data/database.sqlite' }
+  - { match: '^DB_(HOST|PORT|USERNAME)$',      class: SECRET, group: postgres, when: 'DB_CONNECTION=pgsql' }
+  - { match: '^DB_PASSWORD$',                  class: SECRET, group: postgres, when: 'DB_CONNECTION=pgsql' }
+
+  # optional integrations — all default SKIP; only prompted if I enable the group
+  - { match: '^MAIL_',                         class: INTEGRATION, group: smtp }
+  - { match: '^SLACK_',                        class: INTEGRATION, group: slack }
+  - { match: '^DISCORD_',                      class: INTEGRATION, group: discord }
+  - { match: '^TELEGRAM_',                     class: INTEGRATION, group: telegram }
+  - { match: '^PUSHOVER_',                     class: INTEGRATION, group: pushover }
+  - { match: '^GOTIFY_',                       class: INTEGRATION, group: gotify }
+  - { match: '^WEBHOOK_',                      class: INTEGRATION, group: webhook }
+  - { match: '^(AWS_|S3_)',                    class: INTEGRATION, group: s3 }
+  - { match: '^(SFTP_|FTP_)',                  class: INTEGRATION, group: sftp }
+
+# --- integration groups: label + which keys to ask when enabled ------
+integrations:
+  smtp:     { label: 'Email / SMTP failure alerts',      keys: [MAIL_MAILER, MAIL_HOST, MAIL_PORT, MAIL_USERNAME, MAIL_PASSWORD, MAIL_ENCRYPTION, MAIL_FROM_ADDRESS] }
+  slack:    { label: 'Slack notifications',              keys: [SLACK_WEBHOOK_URL] }
+  discord:  { label: 'Discord notifications',            keys: [DISCORD_WEBHOOK_URL] }
+  telegram: { label: 'Telegram notifications',           keys: [TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID] }
+  pushover: { label: 'Pushover notifications',           keys: [PUSHOVER_TOKEN, PUSHOVER_USER] }
+  gotify:   { label: 'Gotify notifications',             keys: [GOTIFY_URL, GOTIFY_TOKEN] }
+  webhook:  { label: 'Generic webhook',                  keys: [WEBHOOK_URL] }
+  s3:       { label: 'S3 / MinIO backup storage',        keys: [AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_DEFAULT_REGION, AWS_BUCKET, AWS_ENDPOINT, AWS_USE_PATH_STYLE_ENDPOINT] }
+  sftp:     { label: 'SFTP / FTP backup storage',        keys: [SFTP_HOST, SFTP_PORT, SFTP_USERNAME, SFTP_PASSWORD, SFTP_ROOT] }
+  postgres: { label: 'External PostgreSQL (self-hosted)', keys: [DB_HOST, DB_PORT, DB_DATABASE, DB_USERNAME, DB_PASSWORD] }
+
+# --- volumes the engine must create on the server (Phase 6.3) ---------
+volumes:
+  - host: '<APP_DIR>/databasement-data'
+    container: /data
+
+# --- compose override hints the engine writes (Phase 4.1) -------------
+override:
+  publish: '127.0.0.1:<proxy_port>:2226'   # bind localhost; Apache proxies in
+  env_file: .env
+  restart: unless-stopped
+  # PUID/PGID injected by engine from the domain user's real uid/gid
+
+# --- notes surfaced to me in the Phase 2 questionnaire ----------------
+notes:
+  - 'databasement bundles web + queue worker + scheduler in ONE container.'
+  - 'Default datastore is sqlite on the /data volume — zero extra services.'
+  - 'Switch DB_CONNECTION=pgsql in Phase 2 to point at your self-hosted Postgres;
+     that flips the postgres group from SKIP to required.'
+
+# --- deploy-direct preflight requirements -----------------------------------
+requires:
+  - bin: php
+    min: "8.2"
+    install: "Install PHP 8.2+ CLI + FPM for the domain user's runtime"
+  - bin: composer
+    install: "Install Composer (getcomposer.org) on PATH"
+  - bin: pm2
+    install: "npm i -g pm2. Native run needs a pm2 ecosystem.config.* that declares the
+      PHP interpreter/script/args (php-fpm, Octane, or the queue worker) — pm2.start.script
+      is Node-only, so deploy-direct uses pm2.start.ecosystem for Laravel."

@@ -1,0 +1,112 @@
+# profiles/_fallback.yml
+# Loaded when NO specific profile matches (Phase 1b).
+# Philosophy: never guess a value that could silently ship broken — DETECT what
+# is knowable from the repo, ASK me for the rest, and refuse to proceed on the
+# few things that must be certain (port, health, build path).
+
+stack: unknown
+match: {}                    # never auto-matches; engine falls back to this explicitly
+
+# --- container facts (mostly UNKNOWN => must be resolved) -------------
+internal_port: null          # engine MUST resolve before Phase 4 (see resolve_port)
+healthcheck_path: /          # safest default; confirm in Phase 2
+healthcheck_fallback: /health
+healthcheck_grace: 30        # generous — we don't know boot cost
+
+# How to resolve the port when null, in order; first hit wins, else ASK:
+resolve_port:
+  - source: dockerfile_expose      # grep EXPOSE in repo Dockerfile
+  - source: compose_ports          # first published container port in compose
+  - source: common_by_signal       # weak heuristics, only a SUGGESTION to confirm
+    defaults:
+      node:   3000
+      python: 8000
+      go:     8080
+      ruby:   3000
+      java:   8080
+      php:    80
+  - source: ask                    # if still unknown => STOP and ask me the port
+
+compose_service: app         # generic single-service name; confirm in Phase 2
+
+# --- build strategy: decided by what the repo ships ------------------
+build_strategy: auto
+build_decision:
+  - when: "has_file('docker-compose.yml')"
+    then: compose-build
+  - when: "has_file('Dockerfile')"
+    then: wrap-dockerfile          # engine writes minimal compose around it
+  - when: else
+    then: STOP
+    reason: >
+      No Dockerfile and no compose. This pipeline is docker-first. Ask me to
+      either (a) point at a base image + start command so you can generate a
+      Dockerfile, or (b) abort. Do NOT invent a Dockerfile for an unknown stack
+      without my confirmation of runtime + start command.
+
+# Minimal wrap used only when Dockerfile exists but compose doesn't:
+wrap_compose:
+  service_name: app
+  build: '.'
+  publish: '127.0.0.1:<proxy_port>:<internal_port>'
+  env_file: .env
+  restart: unless-stopped
+
+# --- secrets: generate nothing blindly -------------------------------
+secret_gen: []               # unknown stack => we don't know what to generate
+
+# --- env classification: detect structurally, ask for the rest -------
+# Classes: AUTO | DERIVED | SECRET | INTEGRATION | IGNORE
+env_classify:
+  # derive only the things that are universally safe to derive
+  - { match: '^(PUID|PGID)$',                     class: DERIVED }
+  - { match: '^(PORT|HTTP_PORT|LISTEN_PORT)$',    class: DERIVED }  # engine fills resolved port
+  - { match: '^(APP_URL|BASE_URL|PUBLIC_URL|SITE_URL)$', class: DERIVED, value: 'https://<domain>' }
+  - { match: '^(NODE_ENV|APP_ENV|ENV|ENVIRONMENT)$',     class: DERIVED, value: 'production' }
+
+  # strong secret signals => always SECRET (asked, masked, never committed)
+  - { match: '(SECRET|PASSWORD|PASSWD|TOKEN|API_?KEY|PRIVATE_?KEY|CREDENTIAL)', class: SECRET, group: secrets }
+
+  # connection-string signals => SECRET, grouped so I enable per-datastore
+  - { match: '(DATABASE_URL|_URI$|_DSN$|CONNECTION_STRING)', class: SECRET, group: datastore }
+
+  # everything else unknown => do NOT assume. Ask, defaulting to SKIP.
+  - { match: '.*',                                class: INTEGRATION, group: unclassified }
+
+# --- integration groups (labels; keys filled from what engine detects)
+integrations:
+  secrets:      { label: 'Required secrets (masked)',        keys: [] }  # engine lists detected
+  datastore:    { label: 'Database / connection strings',    keys: [] }
+  unclassified: { label: 'Unrecognised env vars — review each', keys: [] }
+
+# --- volumes: unknown => ask if the app writes to disk ---------------
+volumes: []
+volume_prompt: >
+  Unknown stack: does this app persist anything to local disk (uploads, sqlite,
+  cache)? If yes, tell me the container path and I'll add a preserved volume
+  under <APP_DIR> and exclude it from rsync --delete.
+
+# --- Phase 2 behaviour: bias toward asking ---------------------------
+questionnaire:
+  show_all_detected: true          # list EVERY detected env key, classified
+  default_optional: SKIP
+  require_confirmation:            # engine must get explicit confirmation on:
+    - internal_port
+    - healthcheck_path
+    - build_strategy
+    - compose_service
+
+# --- notes surfaced to me --------------------------------------------
+notes:
+  - 'No matching profile — running in conservative fallback mode.'
+  - 'I will confirm port, health path, build strategy, and service name with you
+     before building anything. Nothing is assumed silently.'
+  - 'If you deploy this stack often, promote it to its own profiles/<stack>.yml
+     (copy laravel.yml/nextjs.yml as a template) so future runs are non-interactive.'
+
+# --- deploy-direct preflight requirements -----------------------------------
+requires:
+  - bin: pm2
+    install: "npm i -g pm2 (deploy-direct supervises the app under pm2)"
+  # Unknown stack: the command MUST ask which runtime binary this app needs and
+  # add it to the preflight before proceeding (invariant #6 — never assume).
