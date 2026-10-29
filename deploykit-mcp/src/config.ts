@@ -52,7 +52,7 @@ const SAFE_KEY = /^[A-Za-z0-9._-]{1,64}$/;
  * The sshcon key allowlist has to live OUTSIDE the plugin. It is deliberately a
  * closed gate (so the agent cannot resolve an arbitrary target like
  * prod-db-master), but its contents are per-operator: you add a key when you
- * take on a new domain. Editing the shipped .mcp.json would be wiped by the
+ * take on a new domain. Editing the plugin's shipped mcp.json would be wiped by the
  * next `plugin install`, and baking keys into the source would mean a release
  * per domain — so neither is the right home.
  *

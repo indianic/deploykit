@@ -401,8 +401,8 @@ four essentials (port, health path, build strategy, service name) rather than gu
 deploykit/
 ├── .claude-plugin/
 │   ├── plugin.json          # plugin manifest
+│   ├── mcp.json             # launches the MCP server (dist/server.js)
 │   └── marketplace.json     # one‑plugin marketplace catalog
-├── .mcp.json                # launches the MCP server (dist/server.js)
 ├── commands/                # the slash commands
 │   ├── bootstrap-deploy.md  # first deploy through the pipeline (GitHub or local)
 │   ├── deploy-direct.md     # no‑Git, direct‑to‑server native deploy (pm2)
@@ -417,7 +417,7 @@ deploykit/
 │   └── learnings.yml        # append‑only memory of solved problems, loaded each deploy
 ├── deploykit-mcp/           # the privileged MCP server (TypeScript → prebuilt dist/)
 │   ├── src/                 # exec, sessions, config, audit, tools/
-│   ├── dist/server.js       # shipped bundle (what .mcp.json runs)
+│   ├── dist/server.js       # shipped bundle (what mcp.json runs)
 │   └── scripts/smoke.mjs    # self‑contained security + behavior test suite
 ├── HELP.md                  # quick reference
 ├── CHANGELOG.md             # version history
