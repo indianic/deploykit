@@ -12,16 +12,22 @@ agent (Claude Code / Cursor / Copilot) can only call these tools — it never
 holds credentials and never runs freeform SSH. The point is to make root a
 single fixed, audited operation instead of an open shell.
 
-## Tool surface (10 tools)
+## Tool surface (16 tools)
 
 | Tool | Privilege | Purpose |
 |---|---|---|
 | `sshcon_resolve` | reads sshcon | Resolve a target; return a session handle + non-secret facts (never the password/key) |
 | `target_resolve` | reads targets.json | Same, for hosts **not** in sshcon: resolve a NAMED target from `~/.deploykit/targets.json` |
+| `ssh_resolve` | inline details | Resolve a host with **or without** sshcon: `host`/`user` + `key_path`, an env-var name (`key_env`/`password_env`), or a password |
+| `ssh_auth_preflight` | none | Report which SSH auth methods a host offers (key-only / password / both) — uses no credential |
+| `reload_config` | none | Re-read the sshcon key allowlist without restarting the server |
 | `grant_docker_access` | **ROOT (only)** | The one privileged op: install rootless Docker for a domain user (fixed, idempotent script) |
+| `emit_root_runbook` | none | Generate a root runbook for a server team to run by hand — executes nothing |
+| `host_preflight` | reads host | Read-only capability report: CPU x86-64-v2, RAM/swap, disk quota, Docker |
 | `domain_exec` | domain user | Run an **allowlisted verb** (`docker.compose.up`, `rsync.push`, ...) — never a raw command string |
 | `analyze_repo` | none (local RO) | Detect stack, Dockerfile/compose, candidate ports |
 | `detect_env` | none (local RO) | Return classified env key list (never secret values) |
+| `lint_yaml` | none (local RO) | Catch the plain-scalar `": "` colon-trap (and tabs) in generated YAML |
 | `pipeline_run` / `pipeline_status` / `pipeline_trace` | glab | Wrap `glab ci ...` |
 | `health_check` | none | Wrap curl against the deployed URL |
 

@@ -142,7 +142,7 @@ Confirm it's live:
 /mcp
 ```
 
-You should see **deploykit** listed with **15 tools**. That's it — nothing to build,
+You should see **deploykit** listed with **16 tools**. That's it — nothing to build,
 no repo to clone. (The MCP ships prebuilt; you only need Node installed to run it.)
 
 **To update later:**
@@ -323,6 +323,7 @@ server** — a small, audited boundary. Claude drives these; you never do direct
 |---|---|
 | `sshcon_resolve` | Resolve an sshcon target → session handle + non‑secret facts (key‑first auth; `deploy_key_env` for key‑only hosts) |
 | `target_resolve` | Same, for hosts in `~/.deploykit/targets.json` (key + password fallback; `keyB64`/`keyEnv`) |
+| `ssh_resolve` | Resolve a host from inline details, with **or without** sshcon: `host`/`user` + a `key_path`, an env‑var name (`key_env`/`password_env`), or a password |
 | `ssh_auth_preflight` | Report which SSH auth methods a host offers (key‑only / password / both) — no credential used |
 | `reload_config` | Re‑read the sshcon key allowlist without restarting |
 | `grant_docker_access` | The **one** root op: install rootless Docker (installs Docker CE if absent; handles ISPConfig quirks) |
